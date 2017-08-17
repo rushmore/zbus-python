@@ -1,5 +1,5 @@
 import sys
-sys.path.append("../")
+sys.path.append("../../")
 from zbus import MqClient, Message
 import time, threading
 client = MqClient("localhost:15555")

@@ -1,19 +1,19 @@
 #encoding=utf8
-import uuid
-import time
-import json
-import random
+import importlib
 import inspect
+import json
 import logging.config
 import os
-import sys
-import importlib
-import threading
+import random
 import socket
 import ssl
+import sys
+import threading
+import time
+import uuid
 
-class Protocol:
-    VERSION_VALUE = "0.8.0"  # start from 0.8.0
+
+class Protocol: 
     #############Command Values############
     # MQ Produce/Consume
     PRODUCE = "produce"
@@ -309,51 +309,71 @@ class MessageClient(object):
         self.pid = os.getpid()
         self.auto_reconnect = True
         self.reconnect_interval = 3  # 3 seconds
+        self.heartbeat_interval = 60 # 1 minutes
 
         self.result_table = {}
 
-        self.lock = threading.Lock()
+        self.connect_lock = threading.Lock()
+        self.read_lock = threading.Lock()
+        self.write_lock = threading.Lock()
+
         self.on_connected = None
         self.on_disconnected = None
         self.on_message = None
         self.manually_closed = False
-
+    
+        self.heartbeat_timer()
+      
     def close(self):
         self.manually_closed = True
         self.auto_reconnect = False
         self.on_disconnected = None
         self.sock.close()
-        self.read_buf = bytearray()
+        self.read_buf = bytearray() 
+        
+        self.heartbeator.cancel()
+        
 
     def invoke(self, msg, timeout=3):
-        with self.lock:
-            msgid = self._send(msg, timeout)
-            return self._recv(msgid, timeout)
+        msgid = self.send(msg, timeout)
+        return self.recv(msgid, timeout)
 
     def send(self, msg, timeout=3):
-        with self.lock:
+        self.connect() #connect if needed
+        with self.write_lock:
             return self._send(msg, timeout)
+    
+    def heartbeat_timer(self):
+        self.heartbeator = threading.Timer(self.heartbeat_interval, self.heartbeat_timer)
+        self.heartbeator.start()
+        self.heartbeat()
 
     def heartbeat(self):
+        if self.sock == None:
+            return
         msg = Message()
         msg.cmd = 'heartbeat'
+        self.log.debug('Heartbeat: %s' % msg)
         self.send(msg)
 
     def recv(self, msgid=None, timeout=3):
-        with self.lock:
+        self.connect() #connect if needed
+        with self.read_lock:
             return self._recv(msgid, timeout)
 
     def connect(self):
-        with self.lock:
+        if self.sock != None:
+            return
+        with self.connect_lock:
             self.manually_closed = False
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             if self.server_address.ssl_enabled:
                 self.sock = ssl.wrap_socket(
-                    self.sock,  ca_certs=self.ssl_cert_file, cert_reqs=ssl.CERT_REQUIRED)
+                    self.sock, ca_certs=self.ssl_cert_file, cert_reqs=ssl.CERT_REQUIRED)
 
-            self.log.info('Trying connect to (%s)' % self.server_address)
+            self.log.debug('Trying connect to (%s)' % self.server_address)
             self.sock.connect((self.host, self.port))
-            self.log.info('Connected to (%s)' % self.server_address)
+            self.log.debug('Connected to (%s)' % self.server_address)
 
         if self.on_connected:
             self.on_connected()
@@ -365,14 +385,14 @@ class MessageClient(object):
         if not msgid:
             msgid = msg.id = str(uuid.uuid4())
 
-        self.log.debug('Request: %s' % msg)
+        #self.log.debug('Request: %s' % msg)
         self.sock.sendall(msg_encode(msg))
         return msgid
 
     def _recv(self, msgid=None, timeout=3):
         if not msgid and len(self.result_table) > 0:
             try:
-                self.result_table.popitem()[1]
+                return self.result_table.popitem()[1]
             except:
                 pass
 
@@ -384,8 +404,8 @@ class MessageClient(object):
             buf = self.sock.recv(1024)
             #!!! when remote socket idle closed, could return empty, fixed by raising exception!!!
             if buf == None or len(buf) == 0:
-                raise socket.error(
-                    'remote server socket status error, possible idle closed')
+                raise socket.error('remote server socket status error, possible idle closed')
+
             self.read_buf += buf
             idx = 0
             while True:
@@ -402,35 +422,24 @@ class MessageClient(object):
                         self.result_table[msg.id] = msg
                         continue
 
-                self.log.debug('Result: %s' % msg)
+                #self.log.debug('Result: %s' % msg)
                 return msg
 
-    def start(self, recv_timeout=3):
-        def serve():
-            while True:
-                try:
-                    self.connect()
-                    break
-                except socket.error as e:
-                    self.log.warn(e)
-                    time.sleep(self.reconnect_interval)
-
+    def start(self, recv_timeout=60):
+        def serve():  
             while True:
                 try:
                     msg = self.recv(None, recv_timeout)
                     if msg and self.on_message:
                         self.on_message(msg)
-                except socket.timeout as e:
-                    try:
-                        self.heartbeat()  # TODO use another thread to heartbeat
-                    except Exception as e:
-                        pass
+                except socket.timeout as e: 
                     continue
                 except socket.error as e:
                     if self.manually_closed:
                         break
 
-                    self.log.warn(e)
+                    self.log.warn('%s: %s'%(self.server_address, e))
+                    
                     if self.on_disconnected:
                         self.on_disconnected()
                     if not self.auto_reconnect:
@@ -438,27 +447,31 @@ class MessageClient(object):
                     while self.auto_reconnect:
                         try:
                             self.sock.close()
+                            self.sock = None
                             self.connect()
                             break
                         except socket.error as e:
-                            self.log.warn(e)
+                            self.log.warn('%s: %s'%(self.server_address, e))
                             time.sleep(self.reconnect_interval)
 
         self._thread = threading.Thread(target=serve)
         self._thread.start()
 
 
-def build_msg(cmd, topic_or_msg, group=None):
-    if isinstance(topic_or_msg, Message):
-        msg = topic_or_msg  
-    else:
+def build_msg(cmd, topic_ctrl, group=None):
+    if isinstance(topic_ctrl, Message):
+        msg = topic_ctrl  
+    elif isinstance(topic_ctrl, dict):
+        msg = Message(topic_ctrl) 
+    elif isinstance(topic_ctrl, str):
         msg = Message()
-        msg.topic = topic_or_msg
+        msg.topic = topic_ctrl
+    else:
+        raise Exception('topic ctrl not support')
     
-    msg.cmd = cmd  
-    if not msg.consume_group:
-        msg.consume_group = group 
-    
+    msg.cmd = cmd
+    if group:
+        msg.consume_group = group
     return msg
 
 
@@ -467,36 +480,36 @@ class MqClient(MessageClient):
         MessageClient.__init__(self, address, ssl_cert_file)
         self.token = None
 
-    def invoke_cmd(self, cmd, topic_or_msg, group=None,timeout=3):
-        msg = build_msg(cmd, topic_or_msg, group=group)
+    def invoke_cmd(self, cmd, topic_ctrl, group=None, timeout=3):
+        msg = build_msg(cmd, topic_ctrl, group)
         if not msg.token:
             msg.token = self.token
         
         return self.invoke(msg, timeout=timeout)
 
-    def invoke_object(self, cmd, topic, group=None, timeout=3):
-        res = self.invoke_cmd(cmd, topic, group=group, timeout=timeout)
+    def invoke_object(self, cmd, topic_ctrl, group=None, timeout=3):
+        res = self.invoke_cmd(cmd, topic_ctrl, group=None, timeout=timeout)
         if res.status != 200:  # not throw exception, for batch operations' convenience
             return {'error': res.body.decode(res.encoding or 'utf8')}
         return res.body
 
     def produce(self, msg, timeout=3): 
-        return self.invoke_cmd(Protocol.PRODUCE, msg, group=None, timeout=timeout)
+        return self.invoke_cmd(Protocol.PRODUCE, msg, timeout=timeout)
 
-    def consume(self, topic_or_msg, group=None, timeout=3):
-        return self.invoke_cmd(Protocol.CONSUME, topic_or_msg, group=group, timeout=timeout)
+    def consume(self, topic_ctrl, group=None, timeout=3):
+        return self.invoke_cmd(Protocol.CONSUME, topic_ctrl, group=None, timeout=timeout)
 
-    def query(self, topic_or_msg=None, group=None, options=None, timeout=3):
-        return self.invoke_object(Protocol.QUERY, topic_or_msg, group=group, timeout=timeout)
+    def query(self, topic_ctrl, group=None, timeout=3):
+        return self.invoke_object(Protocol.QUERY, topic_ctrl, group=None, timeout=timeout)
 
-    def declare(self, topic_or_msg, group=None, options=None, timeout=3):
-        return self.invoke_object(Protocol.DECLARE, topic_or_msg, group=group, timeout=timeout)
+    def declare(self, topic_ctrl, group=None, timeout=3):
+        return self.invoke_object(Protocol.DECLARE, topic_ctrl, group=None, timeout=timeout)
 
-    def remove(self, topic_or_msg, group=None, options=None, timeout=3):
-        return self.invoke_object(Protocol.REMOVE, topic_or_msg, group=group, timeout=timeout)
+    def remove(self, topic_ctrl, group=None, timeout=3):
+        return self.invoke_object(Protocol.REMOVE, topic_ctrl, group=None, timeout=timeout)
 
-    def empty(self, topic_or_msg, group=None, options=None, timeout=3):
-        return self.invoke_object(Protocol.EMPTY, topic_or_msg, group=group, timeout=timeout)
+    def empty(self, topic_ctrl, group=None, options=None, timeout=3):
+        return self.invoke_object(Protocol.EMPTY, topic_ctrl, group=group, timeout=timeout)
 
     def route(self, msg, timeout=3):
         msg.cmd = Protocol.ROUTE
@@ -522,10 +535,7 @@ class MqClientPool:
   
 
     def make_client(self):
-        client = MqClient(self.server_address, self.ssl_cert_file)
-        client.connect()
-        self.log.debug('New client created %s', client)
-        return client
+        return MqClient(self.server_address, self.ssl_cert_file)  
 
     def _check_pid(self):
         if self.pid != os.getpid():
@@ -591,9 +601,12 @@ class BrokerRouteTable:
         self.votes_table = {}     #{ TrackerAddress=>Vote }
         self.vote_factor = 0.5
         
+        self.voted_trackers = {}
+        
     def update_tracker(self, tracker_info):
         #1) Update votes
         tracker_address = ServerAddress(tracker_info['serverAddress']) 
+        self.voted_trackers[tracker_address] = True
         vote = self.votes_table.get(tracker_address) 
         new_server_table = tracker_info['serverTable'] 
         tracker_version = tracker_info['infoVersion']
@@ -611,21 +624,22 @@ class BrokerRouteTable:
         vote.server_list = server_list            
         
         #2) Merge ServerTable
+        merged_table = self.server_table.copy()
         for server_info in new_server_table.values(): 
             server_address = ServerAddress(server_info['serverAddress'])
-            old_server_info = self.server_table.get(server_address) 
+            old_server_info = merged_table.get(server_address) 
             if old_server_info and old_server_info['infoVersion']>=server_info['infoVersion']:
                 continue
-            self.server_table[server_address] = server_info
+            merged_table[server_address] = server_info
+        self.server_table = merged_table
         
         #3) Purge  
         return self._purge()
 
     def remove_tracker(self, tracker_address):
         tracker_address = ServerAddress(tracker_address)
-        vote = self.votes_table.pop(tracker_address)
-        if vote:
-            return self._purge() 
+        self.votes_table.pop(tracker_address, None)
+        return self._purge() 
 
     def _purge(self):
         to_remove = []
@@ -636,12 +650,12 @@ class BrokerRouteTable:
                 vote = self.votes_table[tracker_address]
                 if server_address in vote.server_list:
                     count += 1
-            total_count = len(self.votes_table)
+            total_count = len(self.voted_trackers)
             if count < total_count*self.vote_factor:
                 to_remove.append(server_address)
         
         for server_address in to_remove:
-            self.server_table.pop(server_address)
+            self.server_table.pop(server_address, None)
          
         topic_table = {}
         for key in self.server_table:
@@ -654,7 +668,7 @@ class BrokerRouteTable:
                 else:
                     topic_table[topic_name].append(topic)
 
-        self.topic_table = topic_table 
+        self.topic_table = topic_table
         return to_remove
 
 
@@ -662,46 +676,51 @@ class _CountDownLatch(object):
     def __init__(self, count=1):
         self.count = count
         self.lock = threading.Condition()
+        self.is_set = False
 
     def count_down(self):
+        if self.is_set:
+            return
         self.lock.acquire()
         self.count -= 1
         if self.count <= 0:
             self.lock.notifyAll()
+            self.is_set = True
         self.lock.release()
 
     def wait(self, timeout=3):
         self.lock.acquire()
-        while self.count > 0:
+        if self.count > 0:
             self.lock.wait(timeout)
         self.lock.release()
 
-class Broker: 
+class Broker:
     log = logging.getLogger(__name__) 
     def __init__(self, tracker_list=None):
         self.pool_table = {}
         self.route_table = BrokerRouteTable()
         self.ssl_cert_file_table = {}
         self.tracker_subscribers = {}
+        self.ready_timeout = 3 #3 seconds
+        self.ready_event = _CountDownLatch(1)
     
         self.on_server_join = None
         self.on_server_leave = None
         self.on_server_updated = None
         
+        
         if tracker_list:
             trackers = tracker_list.split(';')
             for tracker in trackers:
                 self.add_tracker(tracker)
-            
+            self.ready_event.wait(self.ready_timeout)
 
     def add_tracker(self, tracker_address, cert_file=None):
         tracker_address = ServerAddress(tracker_address)
         if tracker_address in self.tracker_subscribers:
             return
         if cert_file:
-            self.ssl_cert_file_table[tracker_address.address] = cert_file
-
-        notify = _CountDownLatch(1)
+            self.ssl_cert_file_table[tracker_address.address] = cert_file 
 
         client = MqClient(tracker_address, cert_file)
         self.tracker_subscribers[tracker_address] = client
@@ -710,12 +729,18 @@ class Broker:
             msg = Message()
             msg.cmd = Protocol.TRACK_SUB
             client.send(msg)
+         
+        def tracker_disconnected(): 
+            to_remove = self.route_table.remove_tracker(client.server_address) 
+            for server_address in to_remove:
+                self._remove_server(server_address) 
 
         def on_message(msg):
             if msg.status != 200:
                 self.log.error(msg)
                 return 
-            tracker_info = msg.body
+            tracker_info = msg.body 
+            client.server_address = ServerAddress(tracker_info['serverAddress'])
             to_remove = self.route_table.update_tracker(tracker_info)
             for server_address in self.route_table.server_table:
                 server_info = self.route_table.server_table[server_address]
@@ -724,21 +749,20 @@ class Broker:
             for server_address in to_remove:
                 self._remove_server(server_address) 
                 
-            notify.count_down()
+            self.ready_event.count_down()
             
 
         client.on_connected = tracker_connected
+        client.on_disconnected = tracker_disconnected
         client.on_message = on_message
-        client.start()
-
-        notify.wait() 
+        client.start() 
 
     def _add_server(self, server_info):
         server_address = ServerAddress(server_info['serverAddress'])
         if server_address in self.pool_table:
             return 
         
-        self.log.info('%s joined' % server_address)
+        self.log.debug('%s joined' % server_address)
         pool = MqClientPool(server_address, self.ssl_cert_file_table.get(server_address.address))
         self.pool_table[server_address] = pool
         
@@ -746,8 +770,8 @@ class Broker:
             self.on_server_join(pool) 
             
     def _remove_server(self, server_address): 
-        self.log.info('%s left' % server_address)
-        pool = self.pool_table.pop(server_address)
+        self.log.debug('%s left' % server_address)
+        pool = self.pool_table.pop(server_address, None)
         if pool:
             if self.on_server_leave:
                 self.on_server_leave(server_address)
@@ -857,7 +881,7 @@ class Producer(MqAdmin):
 class ConsumeThread:
     log = logging.getLogger(__name__)
 
-    def __init__(self, pool, msg_ctrl, message_handler=None, connection_count=1, timeout=3): 
+    def __init__(self, pool, msg_ctrl, message_handler=None, connection_count=1, timeout=60): 
         self.pool = pool
         self.msg_ctrl = msg_ctrl
         if isinstance(msg_ctrl, str):
@@ -875,8 +899,10 @@ class ConsumeThread:
     def take(self, client):
         res = client.consume(self.msg_ctrl, timeout=self.consume_timeout)
         if res.status == 404:
-            client.declare(self.msg_ctrl, timeout=self.consume_timeout)
-            return self.take()
+            res = client.declare(self.msg_ctrl, timeout=self.consume_timeout)
+            if 'error' in res and res['error']:
+                raise Exception(res['error'])
+            return self.take(client)
         if res.status == 200:
             res.id = res.origin_id
             del res.origin_id
@@ -920,7 +946,7 @@ class ConsumeThread:
 class Consumer(MqAdmin):
     log = logging.getLogger(__name__)
 
-    def __init__(self, broker, msg_ctrl, message_handler=None, connection_count=1, selector=None, timeout=3):
+    def __init__(self, broker, msg_ctrl, message_handler=None, connection_count=1, selector=None, consume_timeout=60):
         MqAdmin.__init__(self, broker)
 
         def consume_selecotr(route_table, msg):
@@ -934,7 +960,7 @@ class Consumer(MqAdmin):
             msg.topic = msg_ctrl
             self.msg_ctrl = msg
 
-        self.consume_timeout = timeout
+        self.consume_timeout = consume_timeout
         self.message_handler = message_handler
 
         self.consume_thread_groups = {}
@@ -1060,13 +1086,13 @@ class RpcProcessor:
             return default
         return req[name] or default
 
-    def handle_request(self, msg, client):   
+    def handle_request(self, msg, client):
         msg_res = Message()
         msg_res.status = 200
-        msg_res.encoding = msg.encoding 
+        msg_res.encoding = msg.encoding
         msg_res.recver = msg.sender
-        msg_res.id = msg.id 
-         
+        msg_res.id = msg.id
+
         error = None
         result = None
         try:
@@ -1074,23 +1100,23 @@ class RpcProcessor:
                 msg.body = str(msg.body.decode(msg.encoding or 'utf8'))
 
             if isinstance(msg.body, str):
-                msg.body = json.loads(msg.body) 
+                msg.body = json.loads(msg.body)
             req = msg.body
 
-        except Exception as e: 
+        except Exception as e:
             error = e
 
         if not error:
             try:
                 method = req['method']
                 module = self._get_value(req, 'module', '')
-                params = self._get_value(req, 'params', []) 
-            except Exception as e: 
+                params = self._get_value(req, 'params', [])
+            except Exception as e:
                 error = e
 
         if not error:
             key = '%s:%s' % (module, method)
-            if key not in self.methods: 
+            if key not in self.methods:
                 error = Exception('%s method not found' % key)
             else:
                 method_info = self.methods[key]
@@ -1100,11 +1126,11 @@ class RpcProcessor:
             try:
                 result = method(*params)
             except Exception as e:
-                error = e 
-                
-        msg_res.body = {'error': error, 'result': result} 
-        
-        try:  client.route(msg_res) 
+                error = e
+
+        msg_res.body = {'error': error, 'result': result}
+
+        try: client.route(msg_res)
         except e: pass
 
     def __call__(self, *args, **kv_args):

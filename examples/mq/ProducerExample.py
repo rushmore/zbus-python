@@ -1,9 +1,10 @@
 import sys
-sys.path.append("../")
+sys.path.append("../../")
+
+
 from zbus import Broker, Producer, Message
  
-broker = Broker('localhost:15555')
-
+broker = Broker('localhost:15555') 
 
 p = Producer(broker)
 

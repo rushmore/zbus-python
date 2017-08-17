@@ -1,8 +1,8 @@
 import sys
-sys.path.append("../")
+sys.path.append("../../")
 from zbus import Broker, Consumer
  
-broker = Broker('localhost:15555') 
+broker = Broker('localhost:15555;localhost:15556') 
 
 def message_handler(msg, client):
     print(msg)

@@ -1,4 +1,7 @@
 #encoding=utf8
+import sys
+sys.path.append("../../")
+from zbus import Broker, Consumer, RpcProcessor 
 
 '''
 MyService is just a simple Python object
@@ -20,20 +23,12 @@ class MyService(object):
         return u'中文'
 
 
-import sys
-sys.path.append("../")
-from zbus import Broker, Consumer, RpcProcessor 
-
 p = RpcProcessor()
 p.add_module(MyService) #could be class or object
 
 
-broker = Broker('localhost:15555') 
-
+broker = Broker('localhost:15555;localhost:15556')
 c = Consumer(broker, 'MyRpc')
 c.connection_count = 1
 c.message_handler = p #RpcProcessor is callable
 c.start()
-
-
-

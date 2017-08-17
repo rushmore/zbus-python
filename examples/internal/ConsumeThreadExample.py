@@ -1,5 +1,5 @@
 import sys
-sys.path.append("../")
+sys.path.append("../../")
 from zbus import MqClientPool, ConsumeThread
 
 pool = MqClientPool('localhost:15555')
