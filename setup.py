@@ -9,7 +9,7 @@ here = path.abspath(path.dirname(__file__))
 
 setup(
     name='zbuspy', 
-    version='0.8.2', 
+    version='0.8.4', 
     description='zbus python client', 
 
     # The project's main homepage.

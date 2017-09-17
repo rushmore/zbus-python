@@ -60,11 +60,12 @@ class Protocol:
     # Security
     TOKEN = "token"
 
-    MASK_PAUSE = 1 << 0
-    MASK_RPC = 1 << 1
-    MASK_EXCLUSIVE = 1 << 2
-    MASK_DELETE_ON_EXIT = 1 << 3
-
+    MASK_MEMORY    	     = 1<<0
+    MASK_RPC    	     = 1<<1
+    MASK_PROXY    	     = 1<<2
+    MASK_PAUSE    	     = 1<<3 
+    MASK_EXCLUSIVE 	     = 1<<4 
+    MASK_DELETE_ON_EXIT  = 1<<5
 
 ##########################################################################
 # support both python2 and python3
@@ -244,9 +245,9 @@ def msg_decode(buf, start=0):
     msg.body = buf[p: p + body_len]
     content_type = msg['content-type']
     if content_type:
-        if str(content_type).startswith('text') or str(content_type) == 'application/json':
+        if str(content_type).startswith('text') or str(content_type).startswith('application/json'):
             msg.body = str(msg.body.decode(msg.ecoding or 'utf8'))
-        if str(content_type) == 'application/json':
+        if str(content_type).startswith('application/json'):
             try:
                 msg.body = json.loads(msg.body, encoding=msg.ecoding or 'utf8')
             except:
@@ -924,7 +925,7 @@ class ConsumeThread:
                 self.message_handler(msg, client)
             except socket.timeout:
                 continue
-            except Exception as e:
+            except Exception as e: 
                 self.log.error(e)
                 break
     
@@ -1131,7 +1132,7 @@ class RpcProcessor:
         msg_res.body = {'error': error, 'result': result}
 
         try: client.route(msg_res)
-        except e: pass
+        except: pass
 
     def __call__(self, *args, **kv_args):
         return self.handle_request(*args)
@@ -1140,5 +1141,5 @@ class RpcProcessor:
 __all__ = [
     Message, MessageClient, MqClient, MqClientPool, ServerAddress,
     Broker, MqAdmin, Producer, Consumer, RpcInvoker, RpcProcessor, Remote,
-    ConsumeThread
+    ConsumeThread, Protocol
 ]

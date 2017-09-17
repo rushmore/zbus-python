@@ -14,7 +14,7 @@ zbus strives to make Message Queue and Remote Procedure Call fast, light-weighte
 
 zbus carefully designed on its protocol and components to embrace KISS(Keep It Simple and Stupid) principle, but in all it delivers power and elasticity. 
 
-Start zbus, please refer to [https://github.com/rushmore/zbus](https://github.com/rushmore/zbus) 
+Start zbus, please refer to [https://gitee.com/rushmore/zbus](https://gitee.com/rushmore/zbus) 
 
 
 ## Getting started
