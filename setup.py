@@ -1,15 +1,13 @@
 # Always prefer setuptools over distutils
-from setuptools import setup, find_packages
-# To use a consistent encoding
-from codecs import open
+from setuptools import setup 
 from os import path
 
 here = path.abspath(path.dirname(__file__))
 
-
+install_requires = ["websocket_client"]
 setup(
     name='zbuspy', 
-    version='0.8.4', 
+    version='1.0.7', 
     description='zbus python client', 
 
     # The project's main homepage.
@@ -39,7 +37,7 @@ setup(
         'Programming Language :: Python :: 3.4',
         'Programming Language :: Python :: 3.5',
     ],
- 
+    install_requires=install_requires,
     keywords='MQ RPC ServiceBus SOA', 
     packages=['zbus'],
 )

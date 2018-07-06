@@ -21,7 +21,6 @@ Start zbus, please refer to [https://gitee.com/rushmore/zbus](https://gitee.com/
 
     pip install zbuspy
 
-- zbus.py has no dependency 
 - zbus.py works for both python2.x and python3.x
 
 
@@ -31,72 +30,125 @@ Only demos the gist of API, more configurable usage calls for your further inter
 
 ### Produce message
 
-    broker = Broker('localhost:15555') 
-    
-    p = Producer(broker) 
-    p.declare('MyTopic') 
+    from zbus import MqClient, Message
 
-    msg = Message()
-    msg.topic = 'MyTopic'
-    msg.body = 'hello world'
+    def onopen(client):
+        msg = Message()
+        msg.headers.cmd = 'pub'
+        msg.headers.mq = 'MyMQ'
+        msg.body = 'hello from python'
 
-    res = p.publish(msg)
+        client.invoke(msg, lambda res: print(res) )
+
+    client = MqClient('localhost:15555')
+    client.onopen = onopen
+    client.connect()
 
 
 
 ### Consume message
 
-    broker = Broker('localhost:15555')  
+    from zbus import MqClient, Message
 
-    def message_handler(msg, client):
+    mq = 'MyMQ'
+    channel = 'MyChannel'
+
+    def create_mq(client):
+        msg = Message()
+        msg.headers.cmd = 'create'
+        msg.headers.mq = mq
+        msg.headers.channel = channel 
+        
+        client.invoke(msg, lambda res: print(res)) #lambda
+
+    def onopen(client):
+        
+        create_mq(client)
+        
+        msg = Message()
+        msg.headers.cmd = 'sub' #sub on channel of mq
+        msg.headers.mq = mq
+        msg.headers.channel = channel 
+        
+        def cb(res):
+            print(res)
+        
+        client.invoke(msg, cb)
+
+    def message_handler(msg):
         print(msg)
 
-    c = Consumer(broker, 'MyTopic')
-    c.message_handler = message_handler 
-    c.start()
+    client = MqClient('localhost:15555')
+    client.onopen = onopen
+    client.add_mq_handler(mq, channel, message_handler)
+    client.connect() 
 
 ### RPC client
 
-    broker = Broker('localhost:15555')
+    from zbus import RpcClient   
+    rpc = RpcClient('localhost:15555', mq='MyRpc')
 
-    rpc = RpcInvoker(broker, 'MyRpc') 
-
-    res = rpc.invoke(method='plus', params=[1,2])
-    print(res)
-    
-    res = rpc.plus(1,22)
+    res = rpc.example.plus(1,2) 
     print(res)
 
-    res = rpc.getString('hong')
-    print(res)
-    
-    broker.close()
+    rpc.close()
 
 ### RPC service
 
-    class MyService(object):
-        def getString(self, ping):
-            return ping
+    from zbus import RpcServer, Message, RequestMapping
+
+
+    class MyService: 
         
         def echo(self, ping):
-            return ping
+            return str(ping)
         
-        def save(self, user): 
-            return 'OK'
+        def getString(self, s):
+            return str(s)
             
-        def plus(self, a, b): 
+        def plus(self, a, b):  
             return int(a) + int(b) 
         
-        def testEncoding(self):
+        def testEncoding(self, msg): #msg获取当前上下文的请求消息
+            print(msg)
             return u'中文'
+        
+        def noReturn(self):
+            pass
+        
+        def home(self):
+            res = Message()
+            res.status = 200
+            res.headers['content-type'] = 'text/html; charset=utf8'
+            res.body = '<h1> from Python </h1>'
+            return res
+        
+        def getBin(self):
+            b = bytearray(10)
+            import base64
+            return base64.b64encode(b).decode('utf8')
+        
+        def throwException(self):
+            raise Exception("runtime exception from server")
+        
+        @RequestMapping(path='/m', method='POST') #改变请求路径
+        def map(self): 
+            return {
+                'key1': 'mykey',
+                'key2': 'value2',
+                'key3': 2.5
+            }
+            
+        def testTimeout(self):
+            import time
+            time.sleep(20) 
 
-    p = RpcProcessor()
-    p.add_module(MyService) #could be class or object
 
-
-    broker = Broker('localhost:15555') 
-
-    c = Consumer(broker, 'MyRpc')
-    c.connection_count = 1
-    c.message_handler = p #RpcProcessor is callable
-    c.start()
+    '''
+    侵入代码部分，从zbus上取消息处理返回
+    '''
+    server = RpcServer()
+    server.address = 'localhost:15555'
+    server.mq = 'MyRpc'  
+    server.add_module('example', MyService())
+    server.start() 
