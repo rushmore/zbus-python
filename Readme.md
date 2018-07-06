@@ -14,7 +14,7 @@ zbus strives to make Message Queue and Remote Procedure Call fast, light-weighte
 
 zbus carefully designed on its protocol and components to embrace KISS(Keep It Simple and Stupid) principle, but in all it delivers power and elasticity. 
 
-Start zbus, please refer to [https://gitee.com/rushmore/zbus](https://gitee.com/rushmore/zbus) 
+Start zbus, please refer to [https://github.com/rushmore/zbus](https://github.com/rushmore/zbus) 
 
 
 ## Getting started
@@ -109,7 +109,7 @@ Only demos the gist of API, more configurable usage calls for your further inter
         def plus(self, a, b):  
             return int(a) + int(b) 
         
-        def testEncoding(self, msg): #msg获取当前上下文的请求消息
+        def testEncoding(self, msg): #msg -- request message context
             print(msg)
             return u'中文'
         
@@ -131,7 +131,7 @@ Only demos the gist of API, more configurable usage calls for your further inter
         def throwException(self):
             raise Exception("runtime exception from server")
         
-        @RequestMapping(path='/m', method='POST') #改变请求路径
+        @RequestMapping(path='/m', method='POST') #change path
         def map(self): 
             return {
                 'key1': 'mykey',
@@ -144,11 +144,13 @@ Only demos the gist of API, more configurable usage calls for your further inter
             time.sleep(20) 
 
 
-    '''
-    侵入代码部分，从zbus上取消息处理返回
-    '''
-    server = RpcServer()
-    server.address = 'localhost:15555'
-    server.mq = 'MyRpc'  
-    server.add_module('example', MyService())
-    server.start() 
+    p = RpcProcessor()
+    p.url_prefix = ''  #Global URL prefix
+    p.mount('/example', MyService()) #relative mount url 
+
+    server = RpcServer(p) 
+    #When auth required
+    #server.enable_auth('2ba912a8-4a8d-49d2-1a22-198fd285cb06', '461277322-943d-4b2f-b9b6-3f860d746ffd') #apiKey + secretKey
+    server.mq_server_address = 'localhost:15555' 
+    server.mq = 'MyRpc'   
+    server.start()
